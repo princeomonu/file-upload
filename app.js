@@ -1,158 +1,105 @@
 const express = require("express");
 const app = express();
-
-const crypto = require("crypto");
 const path = require("path");
-const mongoose = require("mongoose");
-const multer = require("multer");
-const GridFsStorage = require("multer-gridfs-storage");
+const fs = require('fs')
+const os = require('os')
+const multer  = require('multer')
+
+// database
+const Db = require('simple-mongo-client')
+const DATABASE = 'Files'
+
 
 // Middlewares
 app.use(express.json());
 app.set("view engine", "ejs");
 
-// DB
-const mongoURI = "mongodb://localhost:27017/node-file-upl";
 
-// connection
-const conn = mongoose.createConnection(mongoURI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true
-});
-
-// init gfs
-let gfs;
-conn.once("open", () => {
-  // init stream
-  gfs = new mongoose.mongo.GridFSBucket(conn.db, {
-    bucketName: "uploads"
-  });
-});
-
-// Storage
-const storage = new GridFsStorage({
-  url: mongoURI,
-  file: (req, file) => {
-    return new Promise((resolve, reject) => {
-      crypto.randomBytes(16, (err, buf) => {
-        if (err) {
-          return reject(err);
-        }
-        const filename = buf.toString("hex") + path.extname(file.originalname);
-        const fileInfo = {
-          filename: filename,
-          bucketName: "uploads"
-        };
-        resolve(fileInfo);
-      });
-    });
+// uploads
+const FILES_DIR = path.join(os.homedir(),'KadMap-Graphics')
+if(!fs.existsSync(FILES_DIR)) fs.mkdirSync(FILES_DIR)
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, FILES_DIR)
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9)
+    cb(null, file.originalname)
   }
-});
+})
 
-const upload = multer({
-  storage
-});
+const upload = multer({ storage })
+
 
 // get / page
 app.get("/", (req, res) => {
-  if(!gfs) {
-    console.log("some error occured, check connection to db");
-    res.send("some error occured, check connection to db");
-    process.exit(0);
+  try{
+    const files= fs.readdirSync(FILES_DIR)
+    console.log('loading',files.length,'files..')
+    return res.render("index", {
+      files: files.map(f=>({
+        filename: f,
+        ext: f.split('.').slice(-1)[0].toLowerCase(),
+        isImage:  ['png','jpg','jpeg','gif'].includes(f.split('.').splice(-1)[0].toLowerCase())
+      })),
+      total: files.length
+    });
+  }catch(err){
+    console.error(err)
+    res.status(500).end()
   }
-  gfs.find().toArray((err, files) => {
-    // check if files
-    if (!files || files.length === 0) {
-      return res.render("index", {
-        files: false
-      });
-    } else {
-      const f = files
-        .map(file => {
-          if (
-            file.contentType === "image/png" ||
-            file.contentType === "image/jpeg"
-          ) {
-            file.isImage = true;
-          } else {
-            file.isImage = false;
-          }
-          return file;
-        })
-        .sort((a, b) => {
-          return (
-            new Date(b["uploadDate"]).getTime() -
-            new Date(a["uploadDate"]).getTime()
-          );
-        });
-
-      return res.render("index", {
-        files: f
-      });
-    }
-
-    // return res.json(files);
-  });
 });
 
-app.post("/upload", upload.single("file"), (req, res) => {
-  // res.json({file : req.file})
+app.post("/upload",upload.single('file'), async(req, res) => {
+  const filesDB = await Db.connect(DATABASE)
+  const result = await filesDB.search({file:req.file.originalname})
+  if(result.success && result.data.length<1){
+    console.log('saving...',req.file.originalname)
+    await filesDB.save({
+      file:req.file.originalname,
+      lastModified: Date.now()
+    })
+  } else{
+    console.log('updating...',req.file.originalname)
+    await filesDB.update({
+      file:req.file.originalname
+    },{
+      lastModified: Date.now()
+    })
+  }
   res.redirect("/");
+
 });
 
-app.get("/files", (req, res) => {
-  gfs.find().toArray((err, files) => {
-    // check if files
-    if (!files || files.length === 0) {
-      return res.status(404).json({
-        err: "no files exist"
-      });
-    }
-
-    return res.json(files);
-  });
+app.get("/files", async(req, res) => {
+  const filesDB = await Db.connect(DATABASE)
+  const [success,data] = await filesDB.getAll()
+  return res.json(success?data:[]);
 });
 
 app.get("/files/:filename", (req, res) => {
-  gfs.find(
-    {
-      filename: req.params.filename
-    },
-    (err, file) => {
-      if (!file) {
-        return res.status(404).json({
-          err: "no files exist"
-        });
-      }
-
-      return res.json(file);
-    }
-  );
+  const filename = req.params.filename
+  res.sendFile(path.join(FILES_DIR,filename))
 });
 
-app.get("/image/:filename", (req, res) => {
-  // console.log('id', req.params.id)
-  const file = gfs
-    .find({
-      filename: req.params.filename
-    })
-    .toArray((err, files) => {
-      if (!files || files.length === 0) {
-        return res.status(404).json({
-          err: "no files exist"
-        });
-      }
-      gfs.openDownloadStreamByName(req.params.filename).pipe(res);
-    });
+app.get("/thumbnail/:ext", (req, res) => {
+  let file = path.join(__dirname,'static',req.params.ext+'.png')
+  if(!fs.existsSync(file)) file=path.join(__dirname,'static','file.png')
+  res.sendFile(file)
 });
 
 // files/del/:id
-// Delete chunks from the db
-app.post("/files/del/:id", (req, res) => {
-  gfs.delete(new mongoose.Types.ObjectId(req.params.id), (err, data) => {
-    if (err) return res.status(404).json({ err: err.message });
-    res.redirect("/");
-  });
+app.post("/files/del/:filename", (req, res) => {
+ try {
+
+  console.log('deleting ',req.params.filename)
+
+  fs.unlinkSync(path.join(FILES_DIR,req.params.filename))
+  res.redirect('/')
+ } catch (error) {
+   console.error(error)
+   res.status(500).end()
+ }
 });
 
 const port = 5001;
