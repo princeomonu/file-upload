@@ -89,13 +89,19 @@ app.get("/thumbnail/:ext", (req, res) => {
 });
 
 // files/del/:id
-app.post("/files/del/:filename", (req, res) => {
+app.post("/files/del/:filename", async(req, res) => {
  try {
-
-  console.log('deleting ',req.params.filename)
-
-  fs.unlinkSync(path.join(FILES_DIR,req.params.filename))
-  res.redirect('/')
+   console.log('deleting ',req.params.filename)
+   // delete file
+   const file = path.join(FILES_DIR,req.params.filename)
+   if(fs.existsSync(file)){
+     fs.unlinkSync(file)
+     // delete db
+     const filesDB = await Db.connect(DATABASE)
+     filesDB.delete({file:req.params.filename})
+     res.redirect('/')
+   }
+   else res.status(404).end()
  } catch (error) {
    console.error(error)
    res.status(500).end()
