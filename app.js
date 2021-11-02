@@ -108,6 +108,10 @@ app.post("/files/del/:filename", async(req, res) => {
  }
 });
 
+app.get('/static/:file',(req,res)=>{
+  res.sendFile(path.join(__dirname,'static',req.params.file))
+})
+
 const port = 5001;
 
 app.listen(port, () => {
